@@ -1,0 +1,44 @@
+# Python 版本要求：Python 3.9+
+# 推荐使用 Python 3.10 或更高版本
+
+# Core Dependencies
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Web Scraping & Automation
+playwright>=1.40.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+aiohttp>=3.9.0
+httpx>=0.25.0
+
+# AI & NLP
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-openai>=0.0.8
+tiktoken>=0.5.0
+sentence-transformers>=2.2.0
+chromadb>=0.4.0
+
+# PDF Processing
+PyPDF2>=3.0.0
+pdfplumber>=0.10.0
+
+# Task Scheduling
+apscheduler>=3.10.0
+
+# Database
+# sqlite3 is included in Python standard library, no need to install
+motor>=3.3.0  # MongoDB driver (optional)
+
+# Utilities
+colorama>=0.4.6
+tqdm>=4.66.0
+loguru>=0.7.0
+schedule>=1.2.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
