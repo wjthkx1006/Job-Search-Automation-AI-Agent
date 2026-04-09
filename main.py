@@ -11,7 +11,7 @@
     python main.py
 
 配置说明:
-    1. 复制 config/.env.example 为 config/.env
+    1. 复制并修改 config/.env.example 为 config/.env
     2. 填入你的 API Key 和配置参数
     3. 运行主程序即可
 """
