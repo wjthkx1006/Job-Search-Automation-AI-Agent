@@ -11,7 +11,7 @@
     python main.py
 
 配置说明:
-    1. 复制并修改 config/.env.example 为 config/.env
+    1. 复制并修改 config/.env 为 config/.env
     2. 填入你的 API Key 和配置参数
     3. 运行主程序即可
 """
@@ -347,7 +347,7 @@ async def main():
         max_salary=25,
         is_intern=True,
         resume=resume,
-        pages_per_platform=2,
+        pages_per_platform=1,  # 减少页数以提高效率
         auto_submit=False  # 默认不自动投递，先预览
     )
 
