@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # LLM 配置
     LLM_API_KEY: Optional[str] = Field(default=None, description="LLM API Key")
     LLM_BASE_URL: Optional[str] = Field(default=None, description="LLM API Base URL")
-    LLM_MODEL: str = Field(default="gpt-4o", description="使用的 LLM 模型")
+    LLM_MODEL: str = Field(default="qwen-turbo", description="使用的 LLM 模型")
     LLM_TEMPERATURE: float = Field(default=0.7, ge=0, le=1)
     
     # 爬虫配置
@@ -41,9 +41,10 @@ class Settings(BaseSettings):
     )
     
     # 筛选条件默认值
+    DEFAULT_KEYWORDS: str = Field(default="Java 实习", description="默认搜索关键词")
     DEFAULT_CITIES: List[str] = Field(default=["北京", "上海", "深圳", "杭州"])
-    MIN_SALARY: int = Field(default=0, ge=0, description="最低薪资（元/月）")
-    MAX_SALARY: int = Field(default=50000, ge=0, description="最高薪资（元/月）")
+    MIN_SALARY: int = Field(default=5000, ge=0, description="最低薪资（元/月）")
+    MAX_SALARY: int = Field(default=30000, ge=0, description="最高薪资（元/月）")
     JOB_TYPES: List[str] = Field(default=["实习", "全职"], description="工作类型")
     
     # 投递配置
