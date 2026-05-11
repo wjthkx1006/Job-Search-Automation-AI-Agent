@@ -27,6 +27,7 @@ from modules.resume_adapter import ResumeOptimizer
 from modules.auto_submitter import AutoSubmitterManager
 from modules.quality_checker import QualityAssuranceManager
 from utils.logger import log
+from utils.storage import JsonStorage
 from config.config import settings
 
 
@@ -36,6 +37,8 @@ class JobSearchAgent:
     def __init__(self):
         """初始化 Agent"""
         log.info("求职全流程自动化 AI Agent 启动中...")
+        
+        self.storage = JsonStorage()
         
         # 初始化各模块（使用 Playwright 浏览器模式）
         self.collector = JobCollector(
@@ -55,7 +58,8 @@ class JobSearchAgent:
         # 初始化简历适配器（使用 Qwen LLM）
         self.resume_optimizer = ResumeOptimizer(
             api_key=settings.LLM_API_KEY,
-            model=settings.LLM_MODEL
+            model=settings.LLM_MODEL,
+            base_url=settings.LLM_BASE_URL
         )
         
         # 兼容旧的 resume_adapter 名称
@@ -65,6 +69,11 @@ class JobSearchAgent:
             auto_submit=settings.AUTO_SUBMIT,
             daily_limit=settings.DAILY_LIMIT
         )
+        
+        submitted_ids = self.storage.get_submitted_job_ids()
+        self.submitter.submitted_jobs = submitted_ids
+        if submitted_ids:
+            log.info(f"已加载 {len(submitted_ids)} 条历史投递记录")
         
         self.quality_checker = QualityAssuranceManager()
         
@@ -115,6 +124,7 @@ class JobSearchAgent:
                 log.error("未获取到任何岗位，请检查配置或网络")
                 return
             
+            self.storage.save_jobs(jobs)
             log.info(f"\n共获取 {len(jobs)} 个岗位\n")
             
             # Step 2: 智能筛选
@@ -342,10 +352,10 @@ async def main():
     
     # 执行求职流程
     await agent.run(
-        keywords="python 实习",
-        cities=["北京", "上海"],
-        max_salary=25,
-        is_intern=True,
+        keywords=settings.DEFAULT_KEYWORDS,
+        cities=settings.DEFAULT_CITIES,
+        max_salary=settings.MAX_SALARY // 1000,
+        is_intern="实习" in settings.JOB_TYPES,
         resume=resume,
         pages_per_platform=1,  # 减少页数以提高效率
         auto_submit=False  # 默认不自动投递，先预览
