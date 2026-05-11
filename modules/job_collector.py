@@ -5,11 +5,13 @@ JobCollector - 多平台岗位信息采集模块
 import asyncio
 import re
 import os
+import random
+import hashlib
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from bs4 import BeautifulSoup
-import requests
+import httpx
 from urllib.parse import urljoin, urlparse
 from modules.models import JobPosition
 from utils.logger import log
@@ -324,7 +326,7 @@ class BossZhipinPlatform(JobPlatformInterface):
                 await self._inject_anti_detection_script()
                 
                 # 打开登录页面
-                login_url = "https://www.zhipin.com/web/user/"
+                login_url = "https://www.zhipin.com/web/user/?ka=header-login"
                 log.info(f"打开登录页面：{login_url}")
                 
                 # 增加超时时间，确保页面能够加载完成
@@ -332,22 +334,25 @@ class BossZhipinPlatform(JobPlatformInterface):
                     response = await self.page.goto(login_url, wait_until="load", timeout=60000)
                     log.info(f"页面加载状态：{response.status if response else 'None'}")
                     
-                    # 等待页面稳定
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                     
-                    # 检查当前页面 URL
-                    current_url = await self.page.url
-                    log.info(f"当前页面 URL：{current_url}")
-                    
-                    # 等待用户登录
                     log.info("请在浏览器中登录 BOSS 直聘账号...")
-                    log.info("登录完成后，程序将自动继续...")
+                    log.info("登录完成后，程序将自动继续（最多等待 120 秒）...")
                     
-                    # 等待 60 秒，让用户有足够的时间登录
-                    for i in range(60):
-                        await asyncio.sleep(1)
-                        if i % 10 == 0:
-                            log.info(f"等待登录中... ({i}/60秒)")
+                    try:
+                        await self.page.wait_for_selector(
+                            'a[href*="logout"], a:has-text("退出"), span:has-text("我的"), '
+                            'a:has-text("个人中心"), [class*="user-nav"]',
+                            timeout=120000
+                        )
+                        log.success("检测到登录成功！")
+                    except Exception:
+                        log.warning("等待登录超时，检查页面状态...")
+                        current_url = self.page.url
+                        if 'user' not in current_url and 'login' not in current_url:
+                            log.info("URL 已变化，可能已登录成功")
+                        else:
+                            log.warning("未检测到登录状态，将以未登录模式继续")
                     
                     # 保存登录凭证
                     await self.context.storage_state(path=self.storage_state)
@@ -364,64 +369,47 @@ class BossZhipinPlatform(JobPlatformInterface):
             return False
     
     async def _inject_anti_detection_script(self):
-        """注入反反爬脚本"""
-        # 注入 stealth 脚本
+        """注入反反爬脚本 - 增强版"""
         await self.page.add_init_script("""
-            // 隐藏 webdriver
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            
-            // 隐藏 plugins
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
+                get: () => {
+                    const plugins = [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    ];
+                    plugins.length = 3;
+                    return plugins;
+                }
             });
-            
-            // 隐藏 languages
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['zh-CN', 'zh']
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+            Object.defineProperty(navigator, 'platform', { get: () => 'Win32' });
+            Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
+            Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 0 });
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+            if (!window.chrome) {
+                window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){} };
+            }
+
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) =>
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters);
+
+            Object.defineProperty(navigator, 'connection', {
+                get: () => ({ rtt: 50, downlink: 10, effectiveType: '4g', saveData: false })
             });
-            
-            // 隐藏 chrome
-            Object.defineProperty(navigator, 'chrome', {
-                get: () => ({ runtime: {} })
-            });
-            
-            // 伪装鼠标移动
-            let lastMove = Date.now();
-            window.addEventListener('mousemove', () => {
-                lastMove = Date.now();
-            });
-            
-            // 隐藏 maxTouchPoints
-            Object.defineProperty(navigator, 'maxTouchPoints', {
-                get: () => 0
-            });
-            
-            // 隐藏 navigator.userAgent
-            Object.defineProperty(navigator, 'userAgent', {
-                get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            });
-            
-            // 隐藏 navigator.platform
-            Object.defineProperty(navigator, 'platform', {
-                get: () => 'Win32'
-            });
-            
-            // 隐藏 navigator.vendor
-            Object.defineProperty(navigator, 'vendor', {
-                get: () => 'Google Inc.'
-            });
-            
-            // 隐藏 navigator.product
-            Object.defineProperty(navigator, 'product', {
-                get: () => 'Gecko'
-            });
-            
-            // 隐藏 navigator.appVersion
-            Object.defineProperty(navigator, 'appVersion', {
-                get: () => '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            });
+
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                if (parameter === 37445) return 'Intel Inc.';
+                if (parameter === 37446) return 'Intel Iris OpenGL Engine';
+                return getParameter.call(this, parameter);
+            };
         """)
     
     async def _manual_login_with_storage(self):
@@ -498,6 +486,25 @@ class BossZhipinPlatform(JobPlatformInterface):
         except:
             pass
     
+    def _get_city_code(self, city: str) -> str:
+        """获取城市编码"""
+        city_map = {
+            "北京": "101010100", "上海": "101020100", "广州": "101280100",
+            "深圳": "101280600", "杭州": "101210100", "成都": "101270100",
+            "南京": "101190100", "武汉": "101200100", "西安": "101110100",
+            "苏州": "101190400", "厦门": "101230200", "长沙": "101250100",
+            "天津": "101030100", "重庆": "101040100", "郑州": "101180100",
+            "青岛": "101120200", "大连": "101070200", "东莞": "101281600",
+            "宁波": "101210400", "福州": "101230100", "合肥": "101220100",
+            "昆明": "101290100", "珠海": "101280700", "佛山": "101280800",
+            "无锡": "101190200", "济南": "101120100", "沈阳": "101070100",
+        }
+        return city_map.get(city, "101010100")
+
+    def _get_random_delay(self, min_sec: float = 1.0, max_sec: float = 3.0) -> float:
+        """获取随机延时时间，模拟真实用户行为"""
+        return random.uniform(min_sec, max_sec)
+
     async def search_jobs(self, keywords: str, city: str, 
                          page: int = 1, max_salary: int = 30,
                          is_intern: bool = True, **kwargs) -> List[JobPosition]:
@@ -513,15 +520,7 @@ class BossZhipinPlatform(JobPlatformInterface):
             encoded_keywords = keywords.replace(" ", "%20")
             encoded_city = city.replace(" ", "%20")
             
-            # 尝试使用网页版直接搜索
-            # 使用正确的 URL 结构
-            city_code = {
-                "北京": "101010100",
-                "上海": "101020100",
-                "广州": "101280100",
-                "深圳": "101280600",
-                "杭州": "101210100"
-            }.get(city, "101010100")  # 默认北京
+            city_code = self._get_city_code(city)
             
             web_url = f"https://www.zhipin.com/web/geek/job?query={encoded_keywords}&city={city_code}&page={page}"
             log.info(f"[{self.platform_name}] 访问网页：{web_url}")
@@ -683,11 +682,6 @@ class BossZhipinPlatform(JobPlatformInterface):
             log.debug(f"API 拦截失败：{str(e)}")
         
         return api_data
-    
-    def _get_random_delay(self, min_sec: float = 1.0, max_sec: float = 3.0) -> float:
-        """获取随机延时时间，模拟真实用户行为"""
-        import random
-        return random.uniform(min_sec, max_sec)
     
     def _parse_api_response(self, data: dict) -> List[JobPosition]:
         """解析 API 响应数据"""
@@ -926,323 +920,312 @@ class BossZhipinPlatform(JobPlatformInterface):
 
 
 class LAGouPlatform(JobPlatformInterface):
-    """拉勾网平台爬虫实现"""
+    """拉勾网平台爬虫实现 - 使用 Playwright 浏览器模式"""
     
     platform_name = "lagou"
     base_url = "https://www.lagou.com"
     
-    def __init__(self, user_agent: str = None):
-        self.session = requests.Session()
-        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        self.session.headers.update({
-            "User-Agent": self.user_agent,
-            "Referer": f"{self.base_url}/",
-            "X-Requested-With": "XMLHttpRequest"
-        })
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.playwright_obj = None
+    
+    async def start(self):
+        """启动浏览器"""
+        if not PLAYWRIGHT_AVAILABLE:
+            log.error("Playwright 未安装，拉勾网爬虫无法使用")
+            return False
+        try:
+            self.playwright_obj = await async_playwright().start()
+            self.browser = await self.playwright_obj.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            self.context = await self.browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                locale='zh-CN'
+            )
+            self.page = await self.context.new_page()
+            log.success("拉勾网浏览器已启动")
+            return True
+        except Exception as e:
+            log.error(f"启动拉勾网浏览器失败：{str(e)}")
+            return False
+    
+    async def close(self):
+        """关闭浏览器"""
+        try:
+            if self.page:
+                await self.page.close()
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            if self.playwright_obj:
+                await self.playwright_obj.stop()
+        except Exception:
+            pass
     
     async def search_jobs(self, keywords: str, city: str,
                          page: int = 1, **kwargs) -> List[JobPosition]:
-        """搜索拉勾网岗位
-        
-        注意：拉勾网有较严格的反爬措施，可能需要：
-        1. 使用代理 IP
-        2. 添加验证码识别
-        3. 控制请求频率
-        """
+        """使用 Playwright 搜索拉勾网岗位"""
         jobs = []
+        if not self.page:
+            await self.start()
         
         try:
-            # 拉勾使用 API 接口
-            api_url = "https://www.lagou.com/jobs/positionAjax.json"
+            encoded_kw = keywords.replace(" ", "%20")
+            url = f"https://www.lagou.com/jobs/list_{encoded_kw}?city={city}&pn={page}"
+            log.info(f"[{self.platform_name}] 访问：{url}")
             
-            headers = {
-                "User-Agent": self.user_agent,
-                "Referer": f"{self.base_url}/",
-                "X-Requested-With": "XMLHttpRequest",
-                "X-Anit-Forge-Token": "",
-                "Cookie": ""  # 可能需要登录后的 Cookie
-            }
+            random_delay = random.uniform(1.0, 3.0)
+            await asyncio.sleep(random_delay)
             
-            params = {
-                "px": "default",
-                "city": city,
-                "needAddtionalResult": "false"
-            }
+            response = await self.page.goto(url, wait_until="networkidle", timeout=30000)
             
-            data = {
-                "first": page,
-                "kd": keywords
-            }
-            
-            response = self.session.post(api_url, params=params, data=data, 
-                                       headers=headers, timeout=15)
-            
-            # 检查响应状态
-            if response.status_code == 403:
-                log.warning(f"[{self.platform_name}] 被拒绝访问，可能需要验证")
+            if not response or response.status != 200:
+                log.warning(f"[{self.platform_name}] HTTP 状态：{response.status if response else 'None'}")
                 return jobs
             
-            if response.status_code != 200:
-                log.warning(f"[{self.platform_name}] HTTP 错误：{response.status_code}")
-                return jobs
+            await asyncio.sleep(random.uniform(1.0, 2.0))
             
-            # 解析 JSON
-            try:
-                result = response.json()
-                
-                # 检查是否成功
-                if result.get('success'):
-                    jobs = self._parse_api_results(
-                        result.get('positionResult', {}).get('result', [])
-                    )
-                    log.info(f"[{self.platform_name}] 采集到 {len(jobs)} 个岗位")
-                else:
-                    log.debug(f"[{self.platform_name}] API 返回：{result}")
-                    
-            except Exception as parse_error:
-                log.warning(f"[{self.platform_name}] JSON 解析失败：{str(parse_error)}")
-                log.debug(f"原始响应：{response.text[:200]}")
+            html = await self.page.content()
+            jobs = self._extract_from_html(html, city)
+            
+            if jobs:
+                log.success(f"[{self.platform_name}] 第{page}页采集到 {len(jobs)} 个岗位")
+            else:
+                log.warning(f"[{self.platform_name}] 第{page}页未采集到数据")
             
         except Exception as e:
             log.error(f"[{self.platform_name}] 搜索失败：{str(e)}")
         
         return jobs
     
-    def _parse_api_results(self, positions: List[Dict]) -> List[JobPosition]:
-        """解析 API 返回结果"""
+    def _extract_from_html(self, html: str, city: str) -> List[JobPosition]:
+        """从 HTML 解析岗位"""
         jobs = []
+        soup = BeautifulSoup(html, 'lxml')
         
-        for pos in positions:
+        for item in soup.select('.item_con_list .con_list_item, .job-item, [class*="job_list"] li'):
             try:
-                # 解析薪资
-                salary = pos.get('salary', '')
-                salary_min, salary_max = self._parse_salary(salary)
+                title_el = item.select_one('.position_link .job_title, .job-name, [class*="title"] a')
+                company_el = item.select_one('.company_name a, .company-name, [class*="company"] a')
+                salary_el = item.select_one('.position_request .money, .salary, [class*="salary"]')
+                tags_els = item.select('.position_request span, .job-tags span, [class*="tag"]')
                 
-                # 提取技能标签
-                financeTag = pos.get('financeTag', '')
-                industryField = pos.get('industryField', '')
+                if not title_el:
+                    continue
                 
-                job = JobPosition(
-                    id=pos.get('id', ''),
-                    title=pos.get('labelList', [{}])[0].get('l', pos.get('positionName', '')),
-                    company=pos.get('companyFullName', ''),
-                    city=pos.get('city', ''),
+                title = title_el.get_text(strip=True)
+                company = company_el.get_text(strip=True) if company_el else ""
+                salary_text = salary_el.get_text(strip=True) if salary_el else ""
+                salary_min, salary_max = self._parse_salary(salary_text)
+                
+                href = title_el.get('href', '')
+                url = href if href.startswith('http') else urljoin(self.base_url, href)
+                
+                education = ""
+                experience = ""
+                tags = []
+                for tag in tags_els:
+                    text = tag.get_text(strip=True)
+                    tags.append(text)
+                    if '本科' in text or '硕士' in text or '大专' in text:
+                        education = text
+                    elif '经验' in text or '实习' in text:
+                        experience = text
+                
+                jobs.append(JobPosition(
+                    id=hashlib.md5(f"{title}_{company}".encode()).hexdigest()[:16],
+                    title=title,
+                    company=company,
+                    city=city,
                     salary_min=salary_min,
                     salary_max=salary_max,
-                    job_type="实习" if '实习' in pos.get('positionName', '') else "全职",
-                    education=pos.get('education', ''),
-                    experience=pos.get('workExperience', ''),
+                    job_type="实习" if '实习' in title else "全职",
+                    education=education,
+                    experience=experience,
                     publish_date=datetime.now(),
-                    description=pos.get('jobDesc', ''),
-                    requirements=pos.get('likuang', ''),
-                    skills=[financeTag, industryField],
+                    description="",
+                    requirements="",
+                    skills=tags[:5],
                     platform=self.platform_name,
-                    url=f"https://www.lagou.com/jobs/{pos.get('id', '')}.html",
-                    is_intern='实习' in pos.get('positionName', ''),
+                    url=url,
+                    is_intern='实习' in title,
                     applied=False
-                )
-                jobs.append(job)
-                
+                ))
             except Exception as e:
-                log.warning(f"解析拉勾岗位失败：{str(e)}")
+                log.debug(f"解析拉勾岗位失败：{str(e)}")
                 continue
         
         return jobs
     
     def _parse_salary(self, salary_text: str) -> tuple:
-        """解析拉勾薪资格式"""
+        """解析薪资格式"""
         if not salary_text:
             return (0, 0)
-        
-        # 拉勾格式："15-25k·14 薪"
         numbers = re.findall(r'\d+', salary_text)
-        
         if len(numbers) >= 2:
             return (int(numbers[0]), int(numbers[1]))
         elif len(numbers) == 1:
             return (int(numbers[0]), int(numbers[0]))
-        
         return (0, 0)
     
     async def get_job_detail(self, job_id: str, url: str) -> Optional[JobPosition]:
-        """获取岗位详情"""
         return None
 
 
 class InternSengPlatform(JobPlatformInterface):
-    """实习僧平台爬虫实现（专注实习岗位）"""
+    """实习僧平台爬虫实现 - 使用 Playwright 浏览器模式"""
     
     platform_name = "internseng"
-    base_url = "https://www.xishoulon.com"
+    base_url = "https://www.shixiseng.com"
     
-    def __init__(self, user_agent: str = None):
-        self.session = requests.Session()
-        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        self.session.headers.update({
-            "User-Agent": self.user_agent,
-            "Referer": self.base_url
-        })
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.playwright_obj = None
+    
+    async def start(self):
+        """启动浏览器"""
+        if not PLAYWRIGHT_AVAILABLE:
+            log.error("Playwright 未安装，实习僧爬虫无法使用")
+            return False
+        try:
+            self.playwright_obj = await async_playwright().start()
+            self.browser = await self.playwright_obj.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled', '--no-sandbox']
+            )
+            self.context = await self.browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
+                locale='zh-CN'
+            )
+            self.page = await self.context.new_page()
+            log.success("实习僧浏览器已启动")
+            return True
+        except Exception as e:
+            log.error(f"启动实习僧浏览器失败：{str(e)}")
+            return False
+    
+    async def close(self):
+        """关闭浏览器"""
+        try:
+            if self.page:
+                await self.page.close()
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            if self.playwright_obj:
+                await self.playwright_obj.stop()
+        except Exception:
+            pass
     
     async def search_jobs(self, keywords: str, city: str,
                          page: int = 1, **kwargs) -> List[JobPosition]:
-        """搜索实习僧岗位
-        
-        注意：实习僧网站可能已变更或关闭，建议检查官网最新地址
-        """
+        """使用 Playwright 搜索实习僧岗位"""
         jobs = []
+        if not self.page:
+            await self.start()
         
         try:
-            # 尝试多个可能的 API 端点
-            api_endpoints = [
-                f"https://www.xishoulon.com/api/jobs/search",
-                f"https://www.xishoulon.com/api/v1/jobs",
-            ]
+            encoded_kw = keywords.replace(" ", "%20")
+            url = f"https://www.shixiseng.com/interns?keyword={encoded_kw}&city={city}&page={page}"
+            log.info(f"[{self.platform_name}] 访问：{url}")
             
-            for api_url in api_endpoints:
-                try:
-                    headers = {
-                        "User-Agent": self.user_agent,
-                        "Accept": "application/json",
-                        "Accept-Language": "zh-CN,zh;q=0.9",
-                    }
-                    
-                    params = {
-                        "keyword": keywords,
-                        "city": city,
-                        "page": page,
-                        "type": "intern"
-                    }
-                    
-                    response = self.session.get(api_url, params=params, 
-                                               headers=headers, timeout=15)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        jobs = self._parse_internseng_response(data)
-                        log.info(f"[{self.platform_name}] 采集到 {len(jobs)} 个岗位")
-                        break
-                    
-                except Exception as e:
-                    log.debug(f"API 端点失败：{str(e)}")
-                    continue
+            random_delay = random.uniform(1.0, 3.0)
+            await asyncio.sleep(random_delay)
             
-            if not jobs:
-                log.warning(f"[{self.platform_name}] 未采集到岗位，网站可能已变更")
+            response = await self.page.goto(url, wait_until="networkidle", timeout=30000)
+            
+            if not response or response.status != 200:
+                log.warning(f"[{self.platform_name}] HTTP 状态：{response.status if response else 'None'}")
+                return jobs
+            
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            
+            html = await self.page.content()
+            jobs = self._extract_from_html(html, city)
+            
+            if jobs:
+                log.success(f"[{self.platform_name}] 第{page}页采集到 {len(jobs)} 个岗位")
+            else:
+                log.warning(f"[{self.platform_name}] 第{page}页未采集到数据")
             
         except Exception as e:
             log.error(f"[{self.platform_name}] 搜索失败：{str(e)}")
         
         return jobs
     
-    def _parse_internseng_response(self, data: dict) -> List[JobPosition]:
-        """解析实习僧 API 响应"""
+    def _extract_from_html(self, html: str, city: str) -> List[JobPosition]:
+        """从 HTML 解析实习岗位"""
         jobs = []
+        soup = BeautifulSoup(html, 'lxml')
         
-        # 尝试不同的数据结构
-        job_list = data.get("data") or data.get("jobs") or data.get("list") or []
-        
-        if isinstance(job_list, list):
-            for item in job_list:
-                try:
-                    salary = item.get("salary", "")
-                    salary_min, salary_max = self._parse_salary(salary)
-                    
-                    job = JobPosition(
-                        id=item.get("id", ""),
-                        title=item.get("title", ""),
-                        company=item.get("company", {}).get("name", "") if isinstance(item.get("company"), dict) else item.get("company", ""),
-                        city=item.get("city", ""),
-                        salary_min=salary_min,
-                        salary_max=salary_max,
-                        job_type="实习",
-                        education=item.get("education", ""),
-                        experience=item.get("experience", ""),
-                        publish_date=datetime.now(),
-                        description=item.get("description", ""),
-                        requirements=item.get("requirements", ""),
-                        skills=[],
-                        platform=self.platform_name,
-                        url=item.get("url", ""),
-                        is_intern=True,
-                        applied=False
-                    )
-                    jobs.append(job)
-                    
-                except Exception as e:
-                    log.warning(f"解析实习僧岗位失败：{str(e)}")
+        for item in soup.select('.intern-wrap .intern-item, .job-item, [class*="position"] li, [class*="intern"] .item'):
+            try:
+                title_el = item.select_one('.job_name a, .intern-name a, [class*="title"] a, [class*="name"] a')
+                company_el = item.select_one('.company_name a, .company-name, [class*="company"] a')
+                salary_el = item.select_one('.salary, .job-salary, [class*="salary"]')
+                
+                if not title_el:
                     continue
+                
+                title = title_el.get_text(strip=True)
+                company = company_el.get_text(strip=True) if company_el else ""
+                salary_text = salary_el.get_text(strip=True) if salary_el else ""
+                salary_min, salary_max = self._parse_salary(salary_text)
+                
+                href = title_el.get('href', '')
+                url = href if href.startswith('http') else urljoin(self.base_url, href)
+                
+                jobs.append(JobPosition(
+                    id=hashlib.md5(f"{title}_{company}".encode()).hexdigest()[:16],
+                    title=title,
+                    company=company,
+                    city=city,
+                    salary_min=salary_min,
+                    salary_max=salary_max,
+                    job_type="实习",
+                    education="",
+                    experience="",
+                    publish_date=datetime.now(),
+                    description="",
+                    requirements="",
+                    skills=[],
+                    platform=self.platform_name,
+                    url=url,
+                    is_intern=True,
+                    applied=False
+                ))
+            except Exception as e:
+                log.debug(f"解析实习僧岗位失败：{str(e)}")
+                continue
         
         return jobs
-    
-    def _parse_job_item(self, item) -> Optional[JobPosition]:
-        """解析单个岗位项"""
-        try:
-            title_elem = item.find('a', class_='job-title')
-            if not title_elem:
-                return None
-            
-            title = title_elem.get_text(strip=True)
-            url = urljoin(self.base_url, title_elem.get('href', ''))
-            
-            # 提取公司信息
-            company_elem = item.find('a', class_='company-name')
-            company = company_elem.get_text(strip=True) if company_elem else ""
-            
-            # 提取薪资
-            salary_elem = item.find('span', class_='salary')
-            salary_text = salary_elem.get_text(strip=True) if salary_elem else ""
-            salary_min, salary_max = self._parse_salary(salary_text)
-            
-            # 提取城市
-            city_elem = item.find('span', class_='city')
-            city = city_elem.get_text(strip=True) if city_elem else ""
-            
-            return JobPosition(
-                id=self._generate_id(title, company),
-                title=title,
-                company=company,
-                city=city,
-                salary_min=salary_min,
-                salary_max=salary_max,
-                job_type="实习",
-                education="",
-                experience="",
-                publish_date=datetime.now(),
-                description="",
-                requirements="",
-                skills=[],
-                platform=self.platform_name,
-                url=url,
-                is_intern=True,
-                applied=False
-            )
-            
-        except Exception as e:
-            log.error(f"解析岗位项异常：{str(e)}")
-            return None
     
     def _parse_salary(self, salary_text: str) -> tuple:
         """解析薪资"""
         if not salary_text:
             return (0, 0)
-        
         numbers = re.findall(r'\d+', salary_text)
-        
         if len(numbers) >= 2:
             return (int(numbers[0]), int(numbers[1]))
         elif len(numbers) == 1:
             return (int(numbers[0]), int(numbers[0]))
-        
         return (0, 0)
     
-    def _generate_id(self, title: str, company: str) -> str:
-        """生成唯一 ID"""
-        import hashlib
-        content = f"{title}_{company}_{datetime.now().timestamp()}"
-        return hashlib.md5(content.encode()).hexdigest()[:16]
-    
     async def get_job_detail(self, job_id: str, url: str) -> Optional[JobPosition]:
-        """获取岗位详情"""
         return None
 
 
