@@ -12,24 +12,15 @@ from utils.logger import log
 
 
 class QwenLLMClient:
-    """Qwen LLM 客户端"""
+    """Qwen LLM 客户端 - 支持自定义 BASE_URL"""
     
-    def __init__(self, api_key: str, model: str = "qwen-turbo"):
+    def __init__(self, api_key: str, model: str = "qwen-turbo", base_url: str = None):
         self.api_key = api_key
         self.model = model
-        self.url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+        self.base_url = (base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
     
     def generate(self, prompt: str, max_tokens: int = 2000) -> Optional[str]:
-        """
-        调用 Qwen 模型生成内容
-        
-        Args:
-            prompt: 提示词
-            max_tokens: 最大生成长度
-        
-        Returns:
-            生成的文本
-        """
+        """调用 LLM 生成内容（兼容 OpenAI 接口格式）"""
         try:
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -38,37 +29,36 @@ class QwenLLMClient:
             
             payload = {
                 "model": self.model,
-                "input": {
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "你是一个专业的求职助手，擅长优化简历和匹配岗位。请提供简洁、实用的建议。"
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
-                },
-                "parameters": {
-                    "max_tokens": max_tokens,
-                    "temperature": 0.7
-                }
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "你是一个专业的求职助手，擅长优化简历和匹配岗位。请提供简洁、实用的建议。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": max_tokens,
+                "temperature": 0.7
             }
             
-            response = requests.post(self.url, json=payload, headers=headers, timeout=30)
+            url = f"{self.base_url}/chat/completions"
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
             response.raise_for_status()
             
             result = response.json()
             
-            if result.get("output") and result["output"].get("text"):
+            if result.get("choices") and result["choices"][0].get("message", {}).get("content"):
+                return result["choices"][0]["message"]["content"]
+            elif result.get("output") and result["output"].get("text"):
                 return result["output"]["text"]
             else:
-                log.warning(f"Qwen API 返回异常：{result}")
+                log.warning(f"LLM API 返回异常：{result}")
                 return None
                 
         except Exception as e:
-            log.error(f"Qwen API 调用失败：{str(e)}")
+            log.error(f"LLM API 调用失败：{str(e)}")
             return None
 
 
@@ -124,10 +114,10 @@ class JDParser:
         
         # 额外提取其他常见技能
         extra_patterns = [
-            r'[办公软件 |Office|WPS]',
-            r'[英语 |CET-4|CET-6|TOEFL|IELTS]',
-            r'[沟通能力 |团队协作 |领导力]',
-            r'[数据分析 |可视化]'
+            r'(?:办公软件|Office|WPS)',
+            r'(?:英语|CET-4|CET-6|TOEFL|IELTS)',
+            r'(?:沟通能力|团队协作|领导力)',
+            r'(?:数据分析|可视化)'
         ]
         
         for pattern in extra_patterns:
@@ -257,20 +247,25 @@ class JDParser:
 class ResumeOptimizer:
     """简历优化器 - 基于 Qwen LLM 定制简历"""
     
-    def __init__(self, api_key: str = None, model: str = "qwen-turbo"):
+    def __init__(self, api_key: str = None, model: str = "qwen-turbo", base_url: str = None):
         """
         Args:
             api_key: Qwen API Key
             model: 使用的模型
+            base_url: LLM API Base URL
         """
-        # 从环境变量或参数获取 API Key
-        self.api_key = api_key or os.getenv("LLM_API_KEY")
-        self.model = model
+        from config.config import settings
+        self.api_key = api_key or os.getenv("LLM_API_KEY") or settings.LLM_API_KEY
+        self.model = model or settings.LLM_MODEL
+        self.base_url = base_url or settings.LLM_BASE_URL
         
-        # 初始化 LLM 客户端
         if self.api_key:
-            self.llm_client = QwenLLMClient(api_key=self.api_key, model=model)
-            log.success("Qwen LLM 客户端已初始化")
+            self.llm_client = QwenLLMClient(
+                api_key=self.api_key,
+                model=self.model,
+                base_url=self.base_url
+            )
+            log.success("LLM 客户端已初始化")
         else:
             self.llm_client = None
             log.warning("未配置 LLM API Key，将使用基础版简历定制")
@@ -486,21 +481,25 @@ class ResumeOptimizer:
     def _parse_optimized_resume(self, optimized_text: str, 
                                 original: Resume,
                                 job: JobPosition) -> Resume:
-        """解析 LLM 返回的优化结果"""
+        """解析 LLM 返回的优化结果 - 增强版容错"""
         try:
-            # 尝试解析 JSON
             import json
-            # 清理可能的 markdown 标记
-            optimized_text = optimized_text.strip()
-            if optimized_text.startswith("```json"):
-                optimized_text = optimized_text[7:]
-            if optimized_text.endswith("```"):
-                optimized_text = optimized_text[:-3]
-            optimized_text = optimized_text.strip()
             
-            data = json.loads(optimized_text)
+            text = optimized_text.strip()
             
-            # 构建优化后的简历
+            if "```json" in text:
+                text = text.split("```json", 1)[1]
+            if "```" in text:
+                text = text.split("```")[0]
+            text = text.strip()
+            
+            json_start = text.find('{')
+            json_end = text.rfind('}')
+            if json_start != -1 and json_end != -1 and json_end > json_start:
+                text = text[json_start:json_end + 1]
+            
+            data = json.loads(text)
+            
             return Resume(
                 name=original.name,
                 phone=original.phone,
@@ -513,12 +512,42 @@ class ResumeOptimizer:
                 self_evaluation=data.get('self_evaluation', original.self_evaluation)
             )
             
+        except json.JSONDecodeError as e:
+            log.warning(f"JSON 解析失败（{str(e)}），尝试提取部分内容...")
+            return self._fallback_parse(optimized_text, original)
         except Exception as e:
             log.warning(f"解析 LLM 返回结果失败：{str(e)}")
-            log.debug(f"返回内容：{optimized_text}")
-            
-            # 如果解析失败，使用基础定制版本
             return original
+    
+    def _fallback_parse(self, text: str, original: Resume) -> Resume:
+        """降级解析：尝试从文本中提取 self_evaluation"""
+        try:
+            eval_markers = ['自我评价', 'self_evaluation', '个人简介']
+            for marker in eval_markers:
+                if marker in text:
+                    start = text.index(marker)
+                    content = text[start + len(marker):].strip().lstrip('：:').lstrip('"').lstrip('\n')
+                    end = min(len(content), 300)
+                    for sep in ['"', '}', '\n\n']:
+                        idx = content.find(sep, 20)
+                        if idx != -1:
+                            end = min(end, idx)
+                    eval_text = content[:end].strip().strip('"').strip("'")
+                    if eval_text and len(eval_text) > 10:
+                        return Resume(
+                            name=original.name,
+                            phone=original.phone,
+                            email=original.email,
+                            education=original.education,
+                            work_experience=original.work_experience,
+                            projects=original.projects,
+                            skills=original.skills,
+                            certificates=original.certificates,
+                            self_evaluation=eval_text
+                        )
+        except Exception:
+            pass
+        return original
     
     def _get_standard_template(self) -> str:
         """标准简历模板"""
