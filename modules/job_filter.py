@@ -3,7 +3,9 @@ JobFilter - 智能岗位筛选模块
 结合规则引擎和语义匹配进行岗位筛选
 """
 import re
-from typing import List, Dict, Optional, Set
+import math
+from typing import List, Dict, Optional, Set, Tuple
+from collections import Counter
 from datetime import datetime
 from modules.models import JobPosition
 from utils.logger import log
@@ -127,59 +129,72 @@ class RuleEngine:
         if not self.experience:
             return True
         
-        # 简化处理
+        exp_str = job.experience
+        if not exp_str or '不限' in exp_str:
+            return True
+        
+        for req in self.experience:
+            if '不限' in req:
+                return True
+            req_years = self._parse_years(req)
+            job_years = self._parse_years(exp_str)
+            if req_years > 0 and job_years > 0:
+                if job_years <= req_years + 1:
+                    return True
+            if req in exp_str or exp_str in req:
+                return True
+        
         return True
+    
+    @staticmethod
+    def _parse_years(text: str) -> int:
+        """从文本中提取年限"""
+        match = re.search(r'(\d+)', text)
+        return int(match.group(1)) if match else 0
 
 
 class SemanticMatcher:
-    """语义匹配器 - 基于关键词和向量相似度"""
+    """语义匹配器 - 基于关键词匹配和 TF-IDF 余弦相似度"""
     
     def __init__(self):
         self.keyword_weights = {
-            '技能关键词': 0.4,
-            '专业关键词': 0.3,
-            '软性要求': 0.2,
-            '加分项': 0.1
+            '技能关键词': 0.35,
+            '专业关键词': 0.25,
+            '语义相似度': 0.25,
+            'JD 质量': 0.15
+        }
+        self.synonyms = {
+            'python': ['py', 'python3'],
+            'java': ['jvm', 'jdk'],
+            'javascript': ['js', 'es6', 'es2015'],
+            'vue': ['vue.js', 'vuejs'],
+            'react': ['react.js', 'reactjs'],
+            'mysql': ['mariadb'],
+            'docker': ['container', '容器化'],
+            'kubernetes': ['k8s'],
+            'typescript': ['ts'],
+            'redis': ['nosql'],
+            'mongodb': ['mongo'],
         }
     
     def match(self, job: JobPosition, resume_skills: List[str],
               resume_keywords: List[str]) -> float:
-        """
-        计算岗位与简历的匹配度
-        
-        Args:
-            job: 岗位信息
-            resume_skills: 简历技能列表
-            resume_keywords: 简历关键词列表
-        
-        Returns:
-            匹配度分数 (0-100)
-        """
+        """计算岗位与简历的匹配度"""
         scores = []
         
-        # 1. 技能匹配度
         skill_score = self._calculate_skill_match(job, resume_skills)
         scores.append(('技能匹配', skill_score, self.keyword_weights['技能关键词']))
         
-        # 2. 关键词覆盖度
         keyword_score = self._calculate_keyword_coverage(job, resume_keywords)
         scores.append(('关键词覆盖', keyword_score, self.keyword_weights['专业关键词']))
         
-        # 3. JD 解析质量
+        semantic_score = self._calculate_tfidf_similarity(job, resume_skills + resume_keywords)
+        scores.append(('语义相似度', semantic_score, self.keyword_weights['语义相似度']))
+        
         jd_quality = self._evaluate_jd_quality(job)
-        scores.append(('JD 质量', jd_quality, self.keyword_weights['软性要求']))
+        scores.append(('JD 质量', jd_quality, self.keyword_weights['JD 质量']))
         
-        # 4. 综合评分
         total_score = sum(score * weight for _, score, weight in scores)
-        
-        # 记录详细得分
-        job.match_details = {
-            'skills': scores[0],
-            'keywords': scores[1],
-            'jd_quality': scores[2],
-            'total': total_score
-        }
-        
         return total_score
     
     def _calculate_skill_match(self, job: JobPosition, resume_skills: List[str]) -> float:
@@ -209,23 +224,23 @@ class SemanticMatcher:
         skills = []
         text = job.description + job.requirements
         
-        # 常见技能关键词模式
         skill_patterns = [
-            r'[Python|Java|C\+\+|JavaScript|Go|Rust]',
-            r'[MySQL|MongoDB|Redis|PostgreSQL]',
-            r'[Docker|Kubernetes|Linux]',
-            r'[AWS|阿里云|腾讯云]',
-            r'[Spring|Django|Flask|React|Vue]',
-            r'[机器学习 | 深度学习|AI|NLP|CV]',
-            r'[数据分析 | 数据可视化|SQL]',
-            r'[Git|SVN|CI/CD]'
+            r'(?:Python|Java|C\+\+|JavaScript|Go|Rust|TypeScript|PHP)',
+            r'(?:MySQL|MongoDB|Redis|PostgreSQL|Oracle)',
+            r'(?:Docker|Kubernetes|Linux|Nginx)',
+            r'(?:AWS|阿里云|腾讯云|Azure)',
+            r'(?:Spring|Django|Flask|React|Vue|Angular|Next\.js)',
+            r'(?:机器学习|深度学习|AI|NLP|CV|PyTorch|TensorFlow)',
+            r'(?:数据分析|数据可视化|SQL|Pandas|NumPy)',
+            r'(?:Git|SVN|CI/CD|Jenkins)',
+            r'(?:HTML|CSS|Webpack|Vite)',
+            r'(?:Kafka|RabbitMQ|Elasticsearch)',
         ]
         
         for pattern in skill_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             skills.extend(matches)
         
-        # 去重
         return list(set(skills))
     
     def _calculate_keyword_coverage(self, job: JobPosition, 
@@ -246,33 +261,46 @@ class SemanticMatcher:
     
     def _is_similar(self, s1: str, s2: str) -> bool:
         """判断两个字符串是否相似"""
-        # 完全匹配
         if s1 == s2:
             return True
-        
-        # 包含关系
         if s1 in s2 or s2 in s1:
             return True
-        
-        # 简繁体/同义词处理（可扩展）
-        synonyms = {
-            'python': ['py', 'python3'],
-            'java': ['jvm', 'jdk'],
-            'javascript': ['js'],
-            'vue': ['vue.js'],
-            'react': ['react.js']
-        }
         
         s1_lower = s1.lower()
         s2_lower = s2.lower()
         
-        for key, values in synonyms.items():
-            if s1_lower == key and s2_lower in values:
-                return True
-            if s2_lower == key and s1_lower in values:
+        for key, values in self.synonyms.items():
+            if (s1_lower == key or s1_lower in values) and (s2_lower == key or s2_lower in values):
                 return True
         
         return False
+    
+    def _calculate_tfidf_similarity(self, job: JobPosition, resume_tokens: List[str]) -> float:
+        """使用 TF-IDF 余弦相似度计算 JD 和简历的语义匹配度"""
+        if not resume_tokens:
+            return 0.0
+        
+        jd_text = (job.description + " " + job.requirements).lower()
+        jd_tokens = re.findall(r'[\w\u4e00-\u9fff]+', jd_text)
+        resume_lower = [t.lower() for t in resume_tokens]
+        
+        if not jd_tokens:
+            return 0.0
+        
+        jd_counter = Counter(jd_tokens)
+        resume_counter = Counter(resume_lower)
+        
+        all_tokens = set(jd_counter.keys()) | set(resume_counter.keys())
+        
+        dot_product = sum(jd_counter.get(t, 0) * resume_counter.get(t, 0) for t in all_tokens)
+        norm_jd = math.sqrt(sum(v ** 2 for v in jd_counter.values()))
+        norm_resume = math.sqrt(sum(v ** 2 for v in resume_counter.values()))
+        
+        if norm_jd == 0 or norm_resume == 0:
+            return 0.0
+        
+        similarity = dot_product / (norm_jd * norm_resume)
+        return min(similarity * 100, 100)
     
     def _evaluate_jd_quality(self, job: JobPosition) -> float:
         """评估 JD 质量"""
