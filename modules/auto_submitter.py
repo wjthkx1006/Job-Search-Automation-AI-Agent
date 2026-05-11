@@ -5,6 +5,7 @@ AutoSubmitter - 自动投递模块
 import asyncio
 import os
 import time
+import random
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pathlib import Path
@@ -143,65 +144,71 @@ class BossZhipinSubmitter(BaseSubmitter):
     
     async def _is_login_required(self) -> bool:
         """检查是否需要登录"""
-        # 检查登录相关元素
-        login_indicators = [
-            '登录',
-            'signin',
-            'login'
-        ]
-        
-        body_text = await self.page.content()
-        for indicator in login_indicators:
-            if indicator in body_text.lower():
+        try:
+            login_el = await self.page.query_selector('[class*="login"], [class*="signin"], .btn-sign')
+            if login_el:
                 return True
-        
-        return False
+            body_text = await self.page.inner_text('body')
+            return '立即登录' in body_text or '扫码登录' in body_text
+        except Exception:
+            return False
     
     async def _click_apply_button(self):
-        """点击投递按钮"""
-        # 尝试多种选择器
+        """点击投递按钮 - BOSS 直聘专用选择器"""
         selectors = [
-            'a[href*="apply"]',
-            '.apply-btn',
-            '[class*="apply"]',
-            'button[class*="apply"]'
+            'button.op-btn-chat',
+            '.btn-start-chat',
+            '[class*="startchat"]',
+            '[ka="cpc_jd_chat"]',
+            'button:has-text("立即沟通")',
+            'button:has-text("马上沟通")',
+            '[class*="communicate"] button',
+            '.job-detail .op-btn',
+            'a.btn-startchat',
         ]
         
         for selector in selectors:
             try:
-                button = self.page.locator(selector)
+                button = self.page.locator(selector).first
                 if await button.is_visible(timeout=2000):
                     await button.click()
-                    log.debug(f"找到投递按钮：{selector}")
+                    log.debug(f"找到沟通按钮：{selector}")
                     return
-            except:
+            except Exception:
                 continue
         
-        # 如果都没找到，尝试截图调试
-        log.warning("未找到投递按钮，正在截图调试...")
+        log.warning("未找到投递/沟通按钮，正在截图调试...")
         await self.page.screenshot(path="debug_apply.png")
     
     async def _fill_form(self, resume: Resume, job: JobPosition) -> bool:
-        """填写申请表单"""
+        """填写申请表单 - 适配 BOSS 直聘聊天窗口"""
         try:
-            # 基本信息
-            await self._fill_field('input[name="name"]', resume.name)
-            await self._fill_field('input[name="phone"]', resume.phone)
-            await self._fill_field('input[name="email"]', resume.email)
+            chat_input_selectors = [
+                '[class*="chat-input"] textarea',
+                '[class*="chat-input"] [contenteditable]',
+                'textarea[class*="ipt"]',
+                '.chat-conversation textarea',
+                '[placeholder*="输入"]',
+                '[placeholder*="打招呼"]',
+            ]
             
-            # 教育背景
-            if resume.education:
-                edu = resume.education[0]
-                await self._fill_field('input[name="school"]', edu.get('school', ''))
-                await self._fill_field('input[name="major"]', edu.get('major', ''))
-                await self._fill_field('input[name="degree"]', edu.get('degree', ''))
+            greeting = (
+                f"您好，我对 {job.title} 岗位非常感兴趣。"
+                f"我具备 {', '.join(resume.skills[:3])} 等技能，"
+                f"期望能有机会进一步交流。"
+            )
             
-            # 上传简历
+            for selector in chat_input_selectors:
+                try:
+                    field = self.page.locator(selector).first
+                    if await field.is_visible(timeout=3000):
+                        await field.fill(greeting)
+                        log.debug(f"填写聊天输入框：{selector}")
+                        return True
+                except Exception:
+                    continue
+            
             await self._upload_resume(resume)
-            
-            # 其他问题（如果有）
-            await self._answer_questions(job)
-            
             return True
             
         except Exception as e:
@@ -211,7 +218,7 @@ class BossZhipinSubmitter(BaseSubmitter):
     async def _fill_field(self, selector: str, value: str):
         """填写字段"""
         try:
-            field = self.page.locator(selector)
+            field = self.page.locator(selector).first
             if await field.is_visible(timeout=3000):
                 await field.fill(value)
                 log.debug(f"填写字段：{selector} = {value[:20]}...")
@@ -234,59 +241,56 @@ class BossZhipinSubmitter(BaseSubmitter):
     async def _answer_questions(self, job: JobPosition):
         """回答附加问题"""
         try:
-            # 检查是否有常见问题
             common_questions = {
-                '期望薪资': str(job.salary_min),
+                '期望薪资': str(job.salary_min) if job.salary_min > 0 else '面议',
                 '到岗时间': '一周内',
                 '工作类型': '实习' if job.is_intern else '全职'
             }
             
             for question, default_answer in common_questions.items():
-                # 查找相关问题
-                question_selector = f'text="{question}"'
-                if await self.page.locator(question_selector).count() > 0:
-                    # 填写答案
-                    await self._fill_field(f'text="{question}" + following::input', default_answer)
-                    
+                try:
+                    question_el = self.page.locator(f'text="{question}"')
+                    if await question_el.count() > 0:
+                        parent = question_el.locator('..')
+                        input_el = parent.locator('input, textarea, [contenteditable]').first
+                        if await input_el.is_visible(timeout=2000):
+                            await input_el.fill(default_answer)
+                except Exception:
+                    continue
         except Exception as e:
             log.warning(f"回答问答失败：{str(e)}")
     
     async def _submit_application(self):
-        """提交申请"""
+        """提交申请 - BOSS 直聘专用"""
         try:
-            # 查找提交按钮
             submit_selectors = [
+                'button.op-btn-chat[class*="send"]',
+                '[class*="chat-input"] button',
+                'button:has-text("发送")',
+                'button:has-text("投递简历")',
+                'button:has-text("立即投递")',
+                '.chat-conversation button:last-child',
                 'button[type="submit"]',
-                '.submit-btn',
-                '[class*="submit"]',
-                'button[class*="submit"]'
             ]
             
             for selector in submit_selectors:
                 try:
-                    submit_btn = self.page.locator(selector)
+                    submit_btn = self.page.locator(selector).first
                     if await submit_btn.is_visible(timeout=3000):
                         await submit_btn.click()
                         log.debug(f"找到提交按钮：{selector}")
-                        
-                        # 等待提交结果
                         await asyncio.sleep(3)
                         
-                        # 检查是否成功
-                        success_indicators = ['成功', '已投递', '提交成功']
-                        page_content = await self.page.content()
-                        
-                        for indicator in success_indicators:
+                        page_content = await self.page.inner_text('body')
+                        for indicator in ['成功', '已投递', '已发送', '已沟通']:
                             if indicator in page_content:
                                 log.success("申请提交成功！")
                                 return
-                        
                         break
-                except:
+                except Exception:
                     continue
             
             log.warning("未找到提交按钮或提交未确认")
-            
         except Exception as e:
             log.error(f"提交申请失败：{str(e)}")
     
@@ -357,19 +361,18 @@ class AutoSubmitterManager:
     """自动投递管理器"""
     
     def __init__(self, auto_submit: bool = False, daily_limit: int = 50):
-        """
-        Args:
-            auto_submit: 是否自动投递
-            daily_limit: 每日投递上限
-        """
         self.auto_submit = auto_submit
         self.daily_limit = daily_limit
         self.submitters = {
             'boss_zhipin': BossZhipinSubmitter(),
+            'boss_zhipin_browser': BossZhipinSubmitter(),
+            'lagou': GeneralSubmitter(),
+            'internseng': GeneralSubmitter(),
             'general': GeneralSubmitter()
         }
         self.daily_count = 0
         self.submitted_jobs = set()
+        self._lock = asyncio.Lock()
     
     async def initialize(self):
         """初始化投递器"""
@@ -380,39 +383,26 @@ class AutoSubmitterManager:
             log.info("自动投递功能已禁用，仅生成预览")
     
     async def submit_job(self, job: JobPosition, resume: Resume) -> bool:
-        """
-        投递单个岗位
+        """投递单个岗位"""
+        async with self._lock:
+            if self.daily_count >= self.daily_limit:
+                log.warning(f"已达到每日投递上限 ({self.daily_limit})")
+                return False
+            if job.id in self.submitted_jobs:
+                log.debug(f"岗位已投递：{job.id}")
+                return True
         
-        Args:
-            job: 目标岗位
-            resume: 简历
-        
-        Returns:
-            是否成功
-        """
-        # 检查每日限制
-        if self.daily_count >= self.daily_limit:
-            log.warning(f"已达到每日投递上限 ({self.daily_limit})")
-            return False
-        
-        # 检查是否已投递
-        if job.id in self.submitted_jobs:
-            log.debug(f"岗位已投递：{job.id}")
-            return True
-        
-        # 选择投递器
         platform = job.platform
         submitter = self.submitters.get(platform, self.submitters['general'])
         
-        # 执行投递
         if self.auto_submit:
             success = await submitter.submit(job, resume)
             
             if success:
-                self.daily_count += 1
-                self.submitted_jobs.add(job.id)
+                async with self._lock:
+                    self.daily_count += 1
+                    self.submitted_jobs.add(job.id)
                 
-                # 记录投递
                 record = ApplicationRecord(
                     job_id=job.id,
                     job_title=job.title,
@@ -421,16 +411,15 @@ class AutoSubmitterManager:
                     status="success",
                     submit_time=datetime.now()
                 )
-                
                 return True
         else:
-            # 仅预览模式
             log.info(f"预览投递：{job.title} @ {job.company}")
             log.info(f"  城市：{job.city}")
             log.info(f"  薪资：{job.get_salary_range()}")
             log.info(f"  链接：{job.url}")
             
-            self.submitted_jobs.add(job.id)
+            async with self._lock:
+                self.submitted_jobs.add(job.id)
             return True
         
         return False
@@ -460,20 +449,20 @@ class AutoSubmitterManager:
         
         async def submit_with_semaphore(job):
             async with semaphore:
-                # 添加延迟避免触发反爬
-                await asyncio.sleep(2)
+                await asyncio.sleep(random.uniform(1.5, 3.5))
                 
                 success = await self.submit_job(job, resume)
                 
-                if success:
-                    results['success'] += 1
-                else:
-                    results['failed'] += 1
+                async with self._lock:
+                    if success:
+                        results['success'] += 1
+                    else:
+                        results['failed'] += 1
                 
-                # 检查每日限制
-                if self.daily_count >= self.daily_limit:
-                    log.warning("达到每日投递上限，停止投递")
-                    return False
+                async with self._lock:
+                    if self.daily_count >= self.daily_limit:
+                        log.warning("达到每日投递上限，停止投递")
+                        return False
                 
                 return success
         
