@@ -80,7 +80,7 @@ playwright install
 
 ```bash
 # 复制环境变量模板
-copy config\.env.example config\.env
+copy config\.env config\.env
 
 # 编辑配置文件，填入你的 API Key
 # 至少需要配置 LLM_API_KEY
@@ -401,3 +401,41 @@ MIT License
 ---
 
 注意：本项目仅供学习和研究使用，请遵守相关法律法规和各平台的使用条款。
+
+## 更新日志
+
+### 修改文件清单
+
+本次修复了 16 个问题，涉及以下文件的修改和新增：
+
+| # | 问题 | 修改文件 | 修改内容 |
+|---|------|----------|----------|
+| 2 | 拉勾网/实习僧平台未实现 | `modules/job_collector.py` | 完全重写 LAGouPlatform 和 InternSengPlatform，使用 Playwright 浏览器模式 + BeautifulSoup 解析 HTML |
+| 3 | skills 正则使用 `[]`（字符类）而非 `()`（分组） | `modules/job_filter.py` | 修复 `_extract_skills_from_jd` 中的正则，改为 `(?:...)` 非捕获组，扩展至 10 个技能类别 |
+| 4 | 城市编码映射只有 5 个城市 | `modules/job_collector.py` | 扩充 `_get_city_code()` 至 28+ 城市（北京/上海/广州/深圳/杭州/成都/武汉/南京/西安/苏州/长沙/郑州/重庆/天津/厦门/合肥/青岛/济南/大连/宁波/昆明/福州/珠海/佛山/东莞/长春/哈尔滨） |
+| 5 | 反爬手段不足 | `modules/job_collector.py` | 增强 `_inject_anti_detection_script()`：WebGL 指纹伪装、Permissions API 劫持、chrome 对象注入、hardwareConcurrency/deviceMemory/connection 属性伪造、真实 plugins 列表 |
+| 6 | 登录流程硬编码 60 秒等待 | `modules/job_collector.py` | 改用 `wait_for_selector` 检测登录状态（120 秒超时），增加 URL 变化兜底检查 |
+| 7 | 语义匹配未实现（返回 0） | `modules/job_filter.py` | 实现 TF-IDF 余弦相似度 `_calculate_tfidf_similarity()`，扩展同义词表至 11 组 |
+| 8 | 经验筛选未实现（返回 0） | `modules/job_filter.py` | 实现 `_check_experience()` + `_parse_years()`，支持 "3-5年"、"不限"、"1年经验" 等格式 |
+| 9 | LLM 客户端未使用配置的 BASE_URL | `modules/resume_adapter.py` + `main.py` | QwenLLMClient 增加 `base_url` 参数，改用 OpenAI 兼容 `/chat/completions` 接口，兼容两种响应格式 |
+| 10 | LLM 返回 JSON 解析不健壮 | `modules/resume_adapter.py` | 增强 `_parse_optimized_resume`：增加 `JSONDecodeError` 捕获、JSON 边界提取（`find('{')`/`rfind('}')`）、`_fallback_parse()` 部分解析兜底 |
+| 11 | resume_adapter.py 中 extra_patterns 正则错误 | `modules/resume_adapter.py` | 修复 `JDParser._extract_skills` 中 `extra_patterns` 的 `[]` → `(?:...)` |
+| 12 | 投递选择器无效 | `modules/auto_submitter.py` | 重写 `_click_apply_button()`/`_fill_form()`/`_submit_application()`，使用 BOSS 直聘专用选择器（`button.op-btn-chat`、`button:has-text("立即沟通")` 等） |
+| 13 | `daily_count` 并发不安全 | `modules/auto_submitter.py` | 增加 `asyncio.Lock` 保护 `daily_count` 和 `submitted_jobs` 的读写，固定延时改为随机 `random.uniform(1.5, 3.5)` |
+| 14 | 无数据持久化 | **新增** `utils/storage.py` + `main.py` | 新增 `JsonStorage` 类，支持岗位/投递记录的 JSON 文件存储、增量去重、原子写入（`.tmp` 替换），集成到 `main.py` 的采集流程中 |
+| 15 | 无测试文件 | **新增** `tests/__init__.py` + `tests/test_models.py` | 新增 pytest 测试用例：JobPosition/Resume 模型测试、RuleEngine 城市/薪资过滤测试、SemanticMatcher 技能提取/TF-IDF 测试、Storage 存储/去重测试 |
+| 16 | `.env` 使用中文逗号 | `config/.env` | `DEFAULT_CITIES` 和 `JOB_TYPES` 中的中文逗号 `，` 改为英文逗号 `,` |
+| 17 | requirements.txt 包含大量未使用依赖 | `requirements.txt` | 移除 langchain、tiktoken、sentence-transformers、chromadb、aiohttp、PyPDF2、pdfplumber、apscheduler、motor、colorama、tqdm、schedule 等未使用依赖 |
+
+### 修改的文件
+
+- `config/.env` — 修复中文逗号
+- `modules/job_collector.py` — 平台实现、城市编码、反爬、登录流程
+- `modules/job_filter.py` — 正则修复、语义匹配、经验筛选
+- `modules/resume_adapter.py` — LLM 客户端、JSON 解析、正则修复
+- `modules/auto_submitter.py` — 投递选择器、并发安全
+- `main.py` — 集成数据持久化、传递 LLM base_url
+- `requirements.txt` — 移除未使用依赖
+- **新增** `utils/storage.py` — JSON 数据持久化模块
+- **新增** `tests/__init__.py` — 测试包
+- **新增** `tests/test_models.py` — 单元测试
